@@ -1,0 +1,12 @@
+{
+  /* Lint-and-typecheck project: everything, tests included (same contract as
+   * Lab Watch). tsconfig.json excludes the tests so shipping does not depend
+   * on the test runner; this file is what `typecheck` runs. `types` is needed
+   * because the suite runs with `globals: true`. */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vitest/globals", "@testing-library/jest-dom"]
+  },
+  "include": ["src", "vite.config.ts"],
+  "exclude": []
+}
