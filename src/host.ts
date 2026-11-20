@@ -236,3 +236,64 @@ export const isPermissionRefusal = (code: string): boolean => /does not have the
 
 /** Whether opening the same file again could end differently: the host or the disk was slow, nothing about the file itself. */
 export const isWorthRetrying = (code: string): boolean => /FETCH_FAILED|TIMEOUT|did not reply|within \d+s/i.test(code);
+
+/** The pad's own window, as the manifest declares it. */
+export const PAD_WIDGET = 'music-loop-pad';
+export const MAIN_WIDGET = 'music-loop-main';
+/** The channel on which the studio tells the pad that the kept loops changed. */
+export const PAD_CHANNEL = 'music-loop.kept';
+
+/** Whether this frame is the pad's window. */
+export function isPadWindow(search: string = window.location.search): boolean {
+  try {
+    const widget = new URLSearchParams(search).get('widget');
+    return widget === PAD_WIDGET || widget === 'pad';
+  } catch (err) {
+    console.warn('[music-loop] the frame address was not read', err);
+    return false;
+  }
+}
+
+/**
+ * Asks the host to put the studio on the left half of the view and the pad on
+ * the right half, on the desktop on screen (`canvas.openBoard`, the gesture
+ * MnemoClio's exploded view uses). Rejects with the host's refusal.
+ */
+export async function openPadWindow(): Promise<void> {
+  await sdk.invoke('canvas.openBoard', {
+    windows: [
+      { id: MAIN_WIDGET, x: 0, y: 0, w: 0.5, h: 1 },
+      { id: PAD_WIDGET, x: 0.5, y: 0, w: 0.5, h: 1 },
+    ],
+    fill: true,
+    zoom: 1,
+    here: true,
+  }, 15_000);
+}
+
+/** Tells every other window of MusicLoop that the kept loops changed. Nothing travels but the fact. */
+export function announceKept(): void {
+  if (typeof BroadcastChannel === 'undefined') return;
+  try {
+    const channel = new BroadcastChannel(PAD_CHANNEL);
+    channel.postMessage({ kind: 'kept-changed' });
+    channel.close();
+  } catch (err) {
+    console.warn('[music-loop] the pad was not told about the kept loops', err);
+  }
+}
+
+/** Calls `fn` when another window says the kept loops changed. Returns the way to stop listening. */
+export function onKeptAnnounced(fn: () => void): () => void {
+  if (typeof BroadcastChannel === 'undefined') return () => undefined;
+  const channel = new BroadcastChannel(PAD_CHANNEL);
+  const on = (event: MessageEvent) => {
+    // Installed cartridges share one origin: only this exact message counts.
+    if ((event.data as { kind?: unknown } | null)?.kind === 'kept-changed') fn();
+  };
+  channel.addEventListener('message', on);
+  return () => {
+    channel.removeEventListener('message', on);
+    channel.close();
+  };
+}

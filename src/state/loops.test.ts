@@ -29,6 +29,17 @@ describe('kept loops', () => {
     expect('source' in parseKept({ ...loop('e'), source: 42 })!).toBe(false);
   });
 
+  it('keeps the pad category of a loop, and drops one it does not know', () => {
+    const base = { id: 'a', path: 'C:/a.mp3', start: 0, end: 2 };
+    expect(parseKept({ ...base, category: 'voice' })?.category).toBe('voice');
+    expect(parseKept({ ...base, category: 'drums' })).not.toHaveProperty('category');
+    expect(parseKept(base)).not.toHaveProperty('category');
+    // The number of laps of a pad: one the pad offers, or none.
+    expect(parseKept({ ...base, laps: 4 })?.laps).toBe(4);
+    expect(parseKept({ ...base, laps: 3 })).not.toHaveProperty('laps');
+    expect(parseKept({ ...base, laps: '4' })).not.toHaveProperty('laps');
+  });
+
   it('repairs what it can of a loop: settings field by field, a missing name, a tempo that is not one', () => {
     const k = parseKept({ id: 'x', path: 'C:/a.wav', start: 0, end: 1, settings: { low: 30, reverse: true }, bpm: -4, captured: 'yes' })!;
     expect(k.name).toBe('x');

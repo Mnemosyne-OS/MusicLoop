@@ -73,3 +73,12 @@ export function formatTime(seconds: number): string {
 export function megabytes(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1);
 }
+
+/** A time of a long sound, to the second: `1:02:07`, or `4:05` under an hour. */
+export function formatClock(seconds: number): string {
+  const total = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = String(total % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}

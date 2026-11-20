@@ -14,7 +14,6 @@
   },
   "keywords": [
     "loop",
-    "music",
     "audio",
     "remix",
     "equaliser",
@@ -23,8 +22,7 @@
     "bpm",
     "shorts",
     "wav",
-    "boucle",
-    "musique"
+    "boucle"
   ],
   "permissions": [
     "dialog:open"
@@ -41,6 +39,15 @@
       "route": "index.html",
       "defaultWidth": 1100,
       "defaultHeight": 780
+    },
+    {
+      "id": "music-loop-pad",
+      "icon": "🎛️",
+      "name": "MusicLoop · Pad",
+      "route": "index.html",
+      "defaultWidth": 900,
+      "defaultHeight": 780,
+      "openOnLaunch": false
     }
   ]
 }

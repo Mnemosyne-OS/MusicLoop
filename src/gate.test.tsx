@@ -171,7 +171,8 @@ describe('a capture longer than a source may be', () => {
   it('a file refused for what it is offers no « Try again »; a file that was slow does', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { studio } = fakeStudio(() => Promise.reject(new Error('TOO_LONG')));
-    const view = render(<App deps={{ engine: studio, transform: identity }} />);
+    // A sound the decoder finds too long, and whose length nothing can tell: it is refused in words.
+    const view = render(<App deps={{ engine: studio, transform: identity, lengthOf: async () => null }} />);
     fireEvent.click(screen.getAllByRole('button', { name: 'Open a sound' })[0]!);
     expect(await screen.findByRole('alert')).toHaveTextContent('longer than 10 minutes');
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();

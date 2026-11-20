@@ -7,6 +7,7 @@
  * frame's localStorage. A loop made from a dropped file has no path: it
  * cannot be opened again, and it is not written anywhere.
  */
+import { parsePassage, type Passage } from '../audio/passage';
 import { parseSettings, type LoopSettings } from '../audio/settings';
 
 export interface KeptLoop {
@@ -29,7 +30,26 @@ export interface KeptLoop {
   captured: boolean;
   settings: LoopSettings;
   savedAt: string;
+  /** Where the loop sits on the pad; absent, on `other`. */
+  category?: PadCategory;
+  /**
+   * The loop was cut from a passage of a sound too long to be read whole: its
+   * `start` and `end` are seconds of THAT passage, and opening the loop again
+   * loads the same passage.
+   */
+  passage?: Passage;
+  /** How many times the pad plays the loop before it stops by itself; absent, until it is stopped. */
+  laps?: number;
 }
+
+/** The shelves of the pad. A loop with none sits on `other`. */
+export const PAD_CATEGORIES = ['beat', 'background', 'voice', 'other'] as const;
+export type PadCategory = (typeof PAD_CATEGORIES)[number];
+export const isPadCategory = (v: unknown): v is PadCategory => typeof v === 'string' && (PAD_CATEGORIES as readonly string[]).includes(v);
+
+/** The numbers of laps a pad offers; none chosen means until stopped. */
+export const PAD_LAPS = [1, 2, 4, 8, 16] as const;
+export const isPadLaps = (v: unknown): v is number => typeof v === 'number' && (PAD_LAPS as readonly number[]).includes(v);
 
 export const MAX_KEPT = 200;
 export const STORAGE_KEY = 'music-loop.kept';
@@ -53,6 +73,9 @@ export function parseKept(raw: unknown): KeptLoop | null {
     captured: raw.captured === true,
     settings: parseSettings(raw.settings),
     savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : '',
+    ...(isPadCategory(raw.category) ? { category: raw.category } : {}),
+    ...(isPadLaps(raw.laps) ? { laps: raw.laps } : {}),
+    ...(parsePassage(raw.passage) ? { passage: parsePassage(raw.passage)! } : {}),
   };
 }
 

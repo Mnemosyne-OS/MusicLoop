@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { LoopEngine, MAX_SOURCE_SECONDS, renderExport, withDeadline, type DecodedSource } from './audio/engine';
 import { maxExportSeconds } from './audio/exportPlan';
+import { DEFAULT_PASSAGE_SECONDS, fetchRange, loadPassage, passageAt, passageWay, PASSAGE_LENGTHS, probeSeconds, type Passage } from './audio/passage';
 import { durationRatio, prepareLoop, type PreparedLoop, type TimeTransform } from './audio/pipeline';
 import { bakeKey, BOUNDS, changesTime, clampSetting, DEFAULT_SETTINGS, filterFor, type LoopSettings } from './audio/settings';
 import { browserTransform } from './audio/timebase';
@@ -19,7 +20,7 @@ import { buildPeakCache, type PeakCache } from './dsp/peaks';
 import { beatSeconds, detectTempo } from './dsp/tempo';
 import { bytesToBase64, encodeWav16 } from './dsp/wav';
 import {
-  downloadBytes, fetchBytes, hostStateGet, hostStateSet, inHost, musicTakes, openLink, pickSound, safeName, saveInAppFolder, showInFolder, soundUrl, takeLabel, TAKES_REFRESH_MS, isPermissionRefusal, isWorthRetrying,
+  announceKept, downloadBytes, fetchBytes, hostStateGet, hostStateSet, inHost, musicTakes, openLink, pickSound, safeName, saveInAppFolder, showInFolder, soundUrl, takeLabel, TAKES_REFRESH_MS, isPermissionRefusal, isWorthRetrying,
   type MusicTake,
 } from './host';
 import { errorText, exportRefusal, type Key } from './i18n/strings';
@@ -27,8 +28,8 @@ import { useI18n } from './i18n/useI18n';
 import { freshId, loadKept, saveKept, withKept, withoutKept, type KeptLoop, type KeptPorts } from './state/loops';
 import { IconButton, IconToggle, NumberField, Slider, Tiles } from './ui/controls';
 import { Credits } from './ui/Credits';
-import { Backwards, Bookmark, Close, FitAll, FitLoop, FolderOpen, Info, Magnet, Play, Reset, Reveal, Save, Stop, ZoomIn, ZoomOut } from './ui/icons';
-import { clampSpan, formatTime, megabytes, viewOfLoop, zoomSpan, type Span } from './ui/viewMath';
+import { Backwards, Bookmark, Close, FitAll, FitLoop, FolderOpen, Grid, Info, Magnet, Play, Reset, Reveal, Save, Stop, ZoomIn, ZoomOut } from './ui/icons';
+import { clampSpan, formatClock, formatTime, megabytes, viewOfLoop, zoomSpan, type Span } from './ui/viewMath';
 import { Waveform } from './ui/Waveform';
 
 /** What the screen asks of the audio engine. */
@@ -48,13 +49,58 @@ export interface AppDeps {
   engine?: Studio;
   transform?: TimeTransform;
   render?: typeof renderExport;
+  /** The length of a sound, in seconds; null when it is not known. */
+  probe?: (url: string) => Promise<number | null>;
+  /** The length of a sound the decoder refused as too long; null when it is not known. */
+  lengthOf?: (url: string) => Promise<number | null>;
+  /** Loads a passage of a long sound. */
+  passage?: (url: string, path: string, passage: Passage, onProgress: (seconds: number) => void, signal: AbortSignal) => Promise<DecodedSource>;
+}
+
+/** A sound too long to be read whole: the screen offers to take a passage of it. */
+class LongSound extends Error {
+  constructor(readonly url: string, readonly seconds: number) {
+    super('TOO_LONG');
+  }
+}
+
+/** From this size up, the length of a file is asked before it is decoded: a long sound decoded whole would not fit in memory. */
+const PROBE_FROM_BYTES = 20 * 1024 * 1024;
+
+/** The length of the sound behind `url`, or null when it is not known in time. */
+async function knownLength(url: string): Promise<number | null> {
+  try {
+    return await probeSeconds(url);
+  } catch (err) {
+    console.warn('[music-loop] the length of the long sound is not known', err);
+    return null;
+  }
+}
+
+/** The length of the sound behind `url` when its size says it may be a long one; null otherwise, or when it is not known. */
+async function lengthIfLarge(url: string): Promise<number | null> {
+  let size = 0;
+  try {
+    size = (await fetchRange(url, 0, 1)).size;
+  } catch (err) {
+    console.warn('[music-loop] the size of the sound is not known, it is opened whole', err);
+    return null;
+  }
+  if (size < PROBE_FROM_BYTES) return null;
+  try {
+    return await probeSeconds(url);
+  } catch (err) {
+    console.warn('[music-loop] the length of the sound is not known, it is opened whole', err);
+    return null;
+  }
 }
 
 type Source =
   | { status: 'none' }
-  | { status: 'loading'; name: string }
+  | { status: 'loading'; name: string; live?: { done: number; of: number } }
+  | { status: 'long'; name: string; path: string; url: string; seconds: number; captured: boolean }
   | { status: 'error'; code: string; retry: (() => void) | null }
-  | ({ status: 'ready'; name: string; path: string | null; captured: boolean; cache: PeakCache } & DecodedSource);
+  | ({ status: 'ready'; name: string; path: string | null; captured: boolean; cache: PeakCache; passage: Passage | null; url: string | null } & DecodedSource);
 
 type ExportLength = 15 | 30 | 60 | 'lap' | 'custom';
 
@@ -81,13 +127,19 @@ const baseName = (path: string): string => path.split(/[\\/]/).pop() || path;
 const signed = (n: number): string => (n > 0 ? `+${n}` : String(n));
 
 /** MusicLoop's one screen. */
-export default function App({ deps = {} }: { deps?: AppDeps }) {
+export default function App({ deps = {}, onOpenPad }: { deps?: AppDeps; onOpenPad?: () => void | Promise<void> }) {
   const { t, lang } = useI18n();
   const engineRef = useRef<Studio | null>(null);
   if (!engineRef.current) engineRef.current = deps.engine ?? new LoopEngine(DEFAULT_SETTINGS);
   const engine = engineRef.current;
   const transform = deps.transform ?? browserTransform;
   const render = deps.render ?? renderExport;
+  const probe = deps.probe ?? lengthIfLarge;
+  const lengthOf = deps.lengthOf ?? knownLength;
+  const readPassage = useMemo<NonNullable<AppDeps['passage']>>(
+    () => deps.passage ?? ((url, path, passage, onProgress, signal) => loadPassage(url, path, passage, { decode: (bytes) => engine.decode(bytes), onProgress, signal })),
+    [deps.passage, engine],
+  );
 
   const [source, setSource] = useState<Source>({ status: 'none' });
   const [loop, setLoop] = useState<Span>({ from: 0, to: 1 });
@@ -110,6 +162,8 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
   const [keptTry, setKeptTry] = useState(0);
   const [keptError, setKeptError] = useState<Key | null>(null);
   const [keepName, setKeepName] = useState('');
+  /** The name of the last loop sent to the pad, said by the button that sent it. */
+  const [sent, setSent] = useState<string | null>(null);
   const [credits, setCredits] = useState(false);
   const [takes, setTakes] = useState<MusicTake[]>([]);
   const [takesError, setTakesError] = useState<'failed' | 'denied' | null>(null);
@@ -117,6 +171,10 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
   const takesDenied = useRef(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const opening = useRef(0);
+  /** Stops the reading of the sound being opened when another one is opened. */
+  const reading = useRef<AbortController | null>(null);
+  const [passageSeconds, setPassageSeconds] = useState<number>(DEFAULT_PASSAGE_SECONDS);
+  const longPlayer = useRef<HTMLAudioElement | null>(null);
 
   const keptPorts = useMemo<KeptPorts>(() => (inHost()
     ? { hostGet: hostStateGet, hostSet: hostStateSet }
@@ -166,7 +224,7 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
   useEffect(() => () => { void engine.dispose(); }, [engine]);
 
   /** A decoded sound becomes what the screen shows; a kept loop brings its region and settings back. */
-  const show = useCallback((decoded: DecodedSource, name: string, path: string | null, captured: boolean, restore: KeptLoop | null) => {
+  const show = useCallback((decoded: DecodedSource, name: string, path: string | null, captured: boolean, restore: KeptLoop | null, passage: Passage | null = null, url: string | null = null) => {
     engine.stop();
     setPlaying(false);
     const found = detectTempo(decoded.channels, decoded.sampleRate);
@@ -189,21 +247,29 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
     setLoopError(null);
     setExported({ status: 'idle' });
     setKeepName(restore?.name ?? safeName(name));
-    setSource({ status: 'ready', name, path, captured, cache: buildPeakCache(decoded.channels), ...decoded });
+    setSource({ status: 'ready', name, path, captured, cache: buildPeakCache(decoded.channels), passage, url, ...decoded });
   }, [engine]);
 
-  const openWith = useCallback((name: string, read: () => Promise<ArrayBuffer>, path: string | null, captured: boolean, restore: KeptLoop | null, retry: (() => void) | null) => {
+  const openWith = useCallback((name: string, read: (signal: AbortSignal) => Promise<DecodedSource>, path: string | null, captured: boolean, restore: KeptLoop | null, retry: (() => void) | null, passage: Passage | null = null, url: string | null = null) => {
     const turn = ++opening.current;
+    reading.current?.abort();
+    const control = new AbortController();
+    reading.current = control;
     // The sound being replaced stops now: if the new one is refused, no loop
     // must keep playing behind a screen that has no stop button any more.
     engine.stop();
     setPlaying(false);
     setSource({ status: 'loading', name });
-    read().then((bytes) => engine.decode(bytes)).then(
-      (decoded) => { if (turn === opening.current) show(decoded, name, path, captured, restore); },
+    read(control.signal).then(
+      (decoded) => { if (turn === opening.current) show(decoded, name, path, captured, restore, passage, url); },
       (err) => {
-        console.error('[music-loop] the sound was not opened', err);
         if (turn !== opening.current) return;
+        // Too long to be read whole: not a refusal, the screen offers a passage of it.
+        if (err instanceof LongSound && path) {
+          setSource({ status: 'long', name, path, url: err.url, seconds: err.seconds, captured });
+          return;
+        }
+        console.error('[music-loop] the sound was not opened', err);
         const code = err instanceof Error ? err.message : String(err);
         // « Try again » only where trying again can end differently: a file
         // that is too long or is not a sound will be refused the same way.
@@ -212,15 +278,57 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
     );
   }, [engine, show]);
 
+  /** Loads one passage of a long sound; a file read as it plays says how far it is. */
+  const openPassage = useCallback((path: string, url: string, passage: Passage, captured: boolean, name: string, restore: KeptLoop | null = null) => {
+    const turn = opening.current + 1;
+    const live = passageWay(path) === 'live';
+    openWith(name, (signal) => readPassage(url, path, passage, (done) => {
+      if (live && turn === opening.current) setSource({ status: 'loading', name, live: { done, of: passage.seconds } });
+    }, signal), path, captured, restore, () => openPassage(path, url, passage, captured, name, restore), passage, url);
+  }, [openWith, readPassage]);
+
   /**
    * Opens the sound at `path`. `name` is what it is called on screen when its
    * file name does not say it: every capture is a `mix.wav`, and the bar, the
    * exported file and a kept loop must carry what the list called it.
+   * A sound longer than a source may be is not read whole: the screen offers
+   * a passage of it, and a kept loop cut from a passage loads that passage.
    */
   const openPath = useCallback((path: string, captured = false, restore: KeptLoop | null = null, name?: string) => {
     const shown = name?.trim() || baseName(path);
-    openWith(shown, async () => fetchBytes(await soundUrl(path)), path, captured, restore, () => openPath(path, captured, restore, name));
-  }, [openWith]);
+    const kept = restore?.passage ?? null;
+    if (kept) {
+      const turn = ++opening.current;
+      engine.stop();
+      setPlaying(false);
+      setSource({ status: 'loading', name: shown });
+      soundUrl(path).then(
+        (url) => { if (turn === opening.current) openPassage(path, url, kept, captured, shown, restore); },
+        (err) => {
+          console.error('[music-loop] the sound was not opened', err);
+          if (turn !== opening.current) return;
+          const code = err instanceof Error ? err.message : String(err);
+          setSource({ status: 'error', code, retry: isWorthRetrying(code) ? () => openPath(path, captured, restore, name) : null });
+        },
+      );
+      return;
+    }
+    openWith(shown, async () => {
+      const url = await soundUrl(path);
+      const seconds = await probe(url);
+      if (seconds !== null && seconds > MAX_SOURCE_SECONDS) throw new LongSound(url, seconds);
+      try {
+        return await engine.decode(await fetchBytes(url));
+      } catch (err) {
+        // A small file can still be a long sound (a low bitrate): its length is then asked for.
+        if (err instanceof Error && err.message === 'TOO_LONG') {
+          const length = await lengthOf(url);
+          if (length !== null) throw new LongSound(url, length);
+        }
+        throw err;
+      }
+    }, path, captured, restore, () => openPath(path, captured, restore, name));
+  }, [openWith, openPassage, engine, probe, lengthOf]);
 
   /** A capture, opened under the name the list shows. One longer than a source may be is never fetched. */
   const openTake = useCallback((take: MusicTake) => {
@@ -229,8 +337,8 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
   }, [openPath, lang]);
 
   const openFile = useCallback((file: File) => {
-    openWith(file.name, () => file.arrayBuffer(), null, false, null, null);
-  }, [openWith]);
+    openWith(file.name, async () => engine.decode(await file.arrayBuffer()), null, false, null, null);
+  }, [openWith, engine]);
 
   const onOpenClick = () => {
     if (!inHost()) {
@@ -342,18 +450,19 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
     if (!keptKnown) return;
     setKept(next);
     saveKept(keptPorts, next).then(
-      () => setKeptError(null),
+      () => { setKeptError(null); announceKept(); },
       (err) => { console.error('[music-loop] kept loops not saved', err); setKeptError('kept.error'); },
     );
   };
 
-  const onKeep = () => {
+  const keepLoop = (name: string) => {
     if (!ready?.path) return;
     writeKept(withKept(kept, {
       id: freshId(kept),
-      name: keepName.trim() || safeName(ready.name),
+      name,
       path: ready.path,
       ...(ready.name !== baseName(ready.path) ? { source: ready.name } : {}),
+      ...(ready.passage ? { passage: ready.passage } : {}),
       start: loop.from,
       end: loop.to,
       bpm: tempo?.bpm ?? null,
@@ -361,6 +470,21 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
       settings,
       savedAt: new Date().toISOString(),
     }));
+  };
+
+  const onKeep = () => {
+    if (!ready) return;
+    keepLoop(keepName.trim() || safeName(ready.name));
+  };
+
+  // One click by the loop: it is kept under where it starts and its name, and
+  // the pad, when its window is open, shows it at once.
+  const onSendToPad = () => {
+    if (!ready?.path || !keptKnown) return;
+    // Where it starts comes first: two loops of one sound differ at the start of their names, where a small tile shows them.
+    const name = `${formatTime(loop.from)} ${keepName.trim() || safeName(ready.name)}`.slice(0, 80);
+    keepLoop(name);
+    setSent(name);
   };
 
   const filter = filterFor(settings.filter);
@@ -376,7 +500,12 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
         <input ref={fileInput} type="file" accept="audio/*,video/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) openFile(f); e.target.value = ''; }} />
         {ready && <span className="ml-file" title={ready.path ?? ready.name}>{ready.name} · {formatTime(ready.seconds)}</span>}
         {ready?.captured && <span className="ml-badge">{t('open.captured')}</span>}
+        {ready?.passage && <span className="ml-badge">{t('long.badge', { from: formatClock(ready.passage.from), total: formatClock(ready.passage.total) })}</span>}
+        {ready?.passage && ready.path && ready.url && (
+          <button type="button" onClick={() => { engine.stop(); setPlaying(false); setSource({ status: 'long', name: ready.name, path: ready.path!, url: ready.url!, seconds: ready.passage!.total, captured: ready.captured }); }}>{t('long.other')}</button>
+        )}
         <span className="ml-grow" />
+        {onOpenPad && <IconButton label={t('pad.open')} onClick={() => { Promise.resolve(onOpenPad()).catch((err) => console.error('[music-loop] the pad was not opened', err)); }}><Grid /></IconButton>}
         <IconButton label={t('credits.open')} onClick={() => setCredits(true)}><Info /></IconButton>
       </header>
 
@@ -384,13 +513,45 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
         <button type="button" className="ml-empty" onClick={onOpenClick}><FolderOpen />{t('open.drop')}</button>
       )}
       {source.status === 'loading' && (
-        <p className="ml-notice busy" role="status">{t('open.loading', { name: source.name })}</p>
+        <p className="ml-notice busy" role="status">
+          {source.live ? t('long.live', { done: formatClock(source.live.done), of: formatClock(source.live.of) }) : t('open.loading', { name: source.name })}
+        </p>
       )}
       {source.status === 'error' && (
         <p className="ml-notice warn" role="alert">
           {errorText(t, source.code)}
           {source.retry && <button type="button" onClick={source.retry}>{t('error.retry')}</button>}
         </p>
+      )}
+
+      {source.status === 'long' && (
+        <section className="ml-card ml-long" aria-label={t('long.title', { time: formatClock(source.seconds) })}>
+          <h2>{source.name} · {t('long.title', { time: formatClock(source.seconds) })}</h2>
+          <p className="lab">{t('long.hint')}</p>
+          {/* The host serves the file by byte ranges: the player moves anywhere in it without loading it. */}
+          <audio ref={longPlayer} className="ml-long-player" controls preload="metadata" src={source.url} />
+          <span className="lab">{t('long.length')}</span>
+          <Tiles
+            label={t('long.length')}
+            value={passageSeconds}
+            options={PASSAGE_LENGTHS.map((n) => ({ value: n as number, text: t('long.minutes', { n: n / 60 }) }))}
+            onChange={setPassageSeconds}
+          />
+          {passageWay(source.path) === 'live' && <p className="lab">{t('long.liveHint')}</p>}
+          <div className="ml-row">
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                const at = longPlayer.current?.currentTime ?? 0;
+                longPlayer.current?.pause();
+                openPassage(source.path, source.url, passageAt(at, passageSeconds, source.seconds), source.captured, source.name);
+              }}
+            >
+              {t('long.take')}
+            </button>
+          </div>
+        </section>
       )}
 
       {ready && (
@@ -407,6 +568,8 @@ export default function App({ deps = {} }: { deps?: AppDeps }) {
                 <span className="len" title={t('wave.length')}>{formatTime(lapSeconds)}</span>
               </span>
               {preparing && <span className="ml-busy" role="status">{t('play.preparing')}</span>}
+              <button type="button" onClick={onSendToPad} disabled={!ready.path || !keptKnown} title={ready.path ? t('pad.send') : t('kept.session')}><Grid />{t('pad.send')}</button>
+              {sent && <span className="lab" role="status">{t('pad.sent', { name: sent })}</span>}
               <span className="ml-grow" />
               <div className="ml-tempo" role="group" aria-label={t('tempo.label')}>
                 {tempo ? (

@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { onHostConfig } from '@mnemosyne_os/cartridge-sdk';
-import App from './App';
+import Root from './Root';
 // The app's theme (skill style-cartouche §0): every colour is a host variable.
 import './ui/theme.css';
 
@@ -18,6 +18,6 @@ onHostConfig();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <Root />
   </React.StrictMode>
 );

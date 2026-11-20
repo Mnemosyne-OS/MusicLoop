@@ -30,3 +30,7 @@ export const Close = () => <Svg><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" /></Svg>;
 export const Info = () => <Svg><circle cx="8" cy="8" r="6" /><path d="M8 7.2v4M8 4.8v.2" /></Svg>;
 export const Reset = () => <Svg><path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8" /><path d="M2.5 1.8v3h3" /></Svg>;
 export const Reveal = () => <Svg><path d="M1.8 12.5V3.6h4l1.4 1.6h7v7.3z" /><path d="M6 9h4M8.5 7.2L10.3 9l-1.8 1.8" /></Svg>;
+export const Grid = () => <Svg><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" /><rect x="9" y="9" width="4.5" height="4.5" rx="1" /></Svg>;
+export const Record = () => <Svg><circle cx="8" cy="8" r="4.5" fill="currentColor" /></Svg>;
+export const Back = () => <Svg><path d="M13 8H3.5M7 4.5L3.5 8 7 11.5" /></Svg>;
+export const Pencil = () => <Svg><path d="M3 13l.6-2.8 7.3-7.3 2.2 2.2-7.3 7.3z" /><path d="M9.6 4.2l2.2 2.2" /></Svg>;
